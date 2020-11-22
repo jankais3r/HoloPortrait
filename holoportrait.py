@@ -31,7 +31,9 @@ config_json = '''
 	"flipSubp": {"value": 0.0}
 }
 '''
+debug = False
 
+# This delegate allows us to talk from the WebView back to Python.
 class debugDelegate(object):
 	def webview_should_start_load(self, webview, url, nav_type):
 		global done
@@ -46,8 +48,16 @@ class debugDelegate(object):
 			stream = io.BytesIO(decoded)
 			img = Image.open(stream)
 			counter = len(quiltImages)
-			img = img.transform(img.size, Image.AFFINE, (1, 0, (-1) * counter * 15 + 338 - counter, 0, 1, 0))
-			quiltImages.append(img)
+			
+			# This shifts the starting horizontal position of individual views in order to keep the objects fixed in their perceived location.
+			if debug == True:
+				img_centered = Image.new('RGB', (980, 961), (255, 255, 255))
+				img_centered.paste(img, (counter * 15 - 330, 0))
+				img_centered.show()
+			else:
+				img_centered = Image.new('RGB', (980, 961))
+				img_centered.paste(img, (counter * 15 - 330, 0))
+			quiltImages.append(img_centered)
 			print('|', end ='')
 		return True
 	
@@ -55,11 +65,11 @@ class debugDelegate(object):
 		print('Step 3/6 - Capturing 45 views ', end ='')
 		pass
 
+# This class uses iOS API to fetch a depth map from the provided image data. The beauty of it is that it works regardless if we have a JPG or a HEIC file.
 class CImage(object):
 	def __init__(self, chosen_pic_data):
 		CIImage = ObjCClass('CIImage')
-		options = []
-		options = dict(options)
+		options = {}
 		options['kCIImageAuxiliaryDepth'] = ns(True)
 		options['kCIImageApplyOrientationProperty'] = ns(True)
 		self.ci_img = CIImage.imageWithData_options_(chosen_pic_data, options)
@@ -74,22 +84,19 @@ class CImage(object):
 		m = ctx.outputImageMaximumSize()
 		cg_img = ctx.createCGImage_fromRect_(self.ci_img, extent)
 		ui_img = UIImage.imageWithCGImage_(cg_img)
-		c.CGImageRelease.argtypes = [c_void_p]
-		c.CGImageRelease.restype = None
-		c.CGImageRelease(cg_img)
-		c.UIImagePNGRepresentation.argtypes = [c_void_p]
-		c.UIImagePNGRepresentation.restype = c_void_p
 		png_data = uiimage_to_png(ObjCInstance(ui_img))
 		return png_data
 
 quiltImages = []
 done = False
 
+# This might break on non-English iOS. Too lazy to test.
 for album in photos.get_smart_albums():
 	if album.title == 'Portrait':
 		my_album = album
 		break
 
+# Again using iOS API to get the photo's proper filename
 try:
 	chosen_pic = photos.pick_asset(assets = my_album.assets, title = 'Select a portrait photo')
 	filename, file_extension = os.path.splitext(str(ObjCInstance(chosen_pic).originalFilename()))
@@ -107,15 +114,21 @@ chosen_pic_depth_stream = io.BytesIO(chosen_pic_depth)
 chosen_pic_depth_image = Image.open(chosen_pic_depth_stream)
 
 arr = numpy.array(chosen_pic_depth_image).astype(int)
+
+# Some Portrait photos have a completely white depth map. Let's treat those as if there was no depth map at all.
 if numpy.ptp(arr) == 0:
 		print('The selected portrait photo does not contain a depth map.')
 		quit()
+
+# This part takes the depth map and normalizes its values to the range of (0, 110). You can experiment with the value, 255 is the ceiling.
 chosen_pic_depth_image_array = (110*(arr - numpy.min(arr))/numpy.ptp(arr)).astype(int)
 chosen_pic_depth_image = Image.fromarray(numpy.uint8(chosen_pic_depth_image_array))
 
+# Making the images smaller for faster processing.
 chosen_pic_image.thumbnail((800, 800), Image.ANTIALIAS)
 chosen_pic_depth_image.thumbnail((800, 800), Image.ANTIALIAS)
 
+# Turning the images into a base64 blob that can be used in the three.js scene
 chosen_pic_image_buffer = io.BytesIO()
 chosen_pic_image.save(chosen_pic_image_buffer, format = 'PNG')
 rgbData = 'data:image/png;base64,' + base64.b64encode(chosen_pic_image_buffer.getvalue()).decode('utf-8')
@@ -143,7 +156,7 @@ canvas {
 <script>
 js2py = new Object();
 js2py.send = function(log) {
-	// create then remove an iframe, to communicate with webview delegate
+	// Create an iframe to communicate with the webview delegate, then remove it.
 	var iframe = document.createElement("IFRAME");
 	iframe.setAttribute("src", "ios-log:" + log);
 	document.documentElement.appendChild(iframe);
@@ -192,6 +205,7 @@ async function main() {
 	const renderer = new THREE.WebGLRenderer({canvas: canvas,
 	preserveDrawingBuffer: true});
 	
+	// Constants you can experiment with: near, far, camera.position.z, depthSpread, skip, size
 	const fov = 70;
 	const aspect = 2;
 	const near = 1;
@@ -213,6 +227,7 @@ async function main() {
 	const spread = 1000;
 	const depthSpread = 1900;
 	const imageAspect = rgbData.width / rgbData.height;
+	const size = 10;
 	
 	for (let y = 0; y < down; ++y) {
 		const v = y / (down - 1);
@@ -234,7 +249,7 @@ async function main() {
 	geometry.addAttribute( 'position', new THREE.Float32BufferAttribute( positions, 3 ) );
 	geometry.addAttribute( 'color', new THREE.Float32BufferAttribute( colors, 3 ) );
 	geometry.computeBoundingSphere();
-	const material = new THREE.PointsMaterial( { size: 10, vertexColors: THREE.VertexColors } );
+	const material = new THREE.PointsMaterial( { size: size, vertexColors: THREE.VertexColors } );
 	const points = new THREE.Points( geometry, material );
 	scene.add( points );
 	
@@ -258,8 +273,8 @@ async function main() {
 			camera.updateProjectionMatrix();
 		}
 		
+		// This part takes care of taking picture from 45 linear views. If you experiment with the movement, don't forget to adjust the shift on rows 55 & 59.
 		camera.position.x = -900;
-		
 		for (i = 0; i < 45; i++) { 
 			camera.position.x += 40;
 			renderer.render(scene, camera);
@@ -275,20 +290,26 @@ main();
 </html>
 '''
 
+# Create a WebView that will be used to render the three.js scene, and make it hidden.
 v = WebView()
 v.delegate = debugDelegate()
 v.hidden = True
 v.present(hide_title_bar = True)
+
+# This is a default size of the view on an iPad, but we need to hardcode it otherwise the thing falls apart when run on an iPhone.
 v.width = 704
 v.height = 690
 v.load_html(html)
 print('Step 2/6 - Rendering a point cloud')
 
+# Wait until the JavaScript sends us a signal that it finished rendering the views.
 while done != True:
 	time.sleep(1)
 
 print('Step 4/6 - Combining the views into a quilt')
 dst = Image.new('RGB', (4096, 4096))
+
+# A very low-tech approach to defining a position of each view on a quilt.
 w = 819
 h = 455
 order = {
@@ -305,13 +326,18 @@ order = {
 
 for idx in range(len(quiltImages)):	
 	panel = Image.new('RGB', (819, 455))
+	
+	# Each view on the quilt only has a height of 455, but the three.js scene has a lot of blank space around it, so we can afford to make the pic 480px tall without risking clipping any of the content.
 	quiltImages[idx].thumbnail((819, 480), Image.ANTIALIAS)
+	
+	# We stretch each view by 15% horizontally. Might be wrong, but it just looks better on the Looking Glass. Feel free to experiment with the value.
 	quiltImages[idx] = quiltImages[idx].resize((int(quiltImages[idx].width*1.15), quiltImages[idx].height), Image.BICUBIC)
 	centered_x_coord = int((819-quiltImages[idx].width)/2)
 	centered_y_coord = int((455-quiltImages[idx].height)/2)
 	panel.paste(quiltImages[idx], (centered_x_coord, centered_y_coord))
 	dst.paste(panel, order[idx+1])
-# dst.show() # Uncommment to display the quilt image
+if debug == True:
+	dst.show()
 
 print('Step 5/6 - Turning the quilt into a hologram')
 
