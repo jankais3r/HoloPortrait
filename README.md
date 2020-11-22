@@ -24,7 +24,9 @@ Portrait photo to Hologram all-in-one script
 
 ![Demo](https://github.com/jankais3r/HoloPortrait/blob/main/demo.gif)
 
-See it in action [here](https://twitter.com/jankais3r/status/1329924274686205952).
+![Colormap demo](https://github.com/jankais3r/HoloPortrait/blob/main/demo_colormap.gif)
+
+See it in action [here](https://twitter.com/jankais3r/status/1329924274686205952) and [here](https://twitter.com/jankais3r/status/1330567422865252352).
 
 ### Performance
 - The script should work on any iPhone/iPad running at least iOS 13 and Pythonista 3.3
