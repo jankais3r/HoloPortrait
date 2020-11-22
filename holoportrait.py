@@ -4,12 +4,13 @@ import sys
 import json
 import time
 import Image
-import numpy
 import base64
 import photos
+import numpy as np
 import urllib.parse
 from ui import WebView
 from objc_util import *
+import matplotlib.cm as cm
 from math import atan, cos, floor
 
 # Get your calibration values at https://eka.hn/calibration_test.html
@@ -32,6 +33,7 @@ config_json = '''
 }
 '''
 debug = False
+colormap = False
 
 # This delegate allows us to talk from the WebView back to Python.
 class debugDelegate(object):
@@ -113,24 +115,32 @@ chosen_pic_depth = CImage(ns(chosen_pic_data)).to_png()
 chosen_pic_depth_stream = io.BytesIO(chosen_pic_depth)
 chosen_pic_depth_image = Image.open(chosen_pic_depth_stream)
 
-arr = numpy.array(chosen_pic_depth_image).astype(int)
+arr = np.array(chosen_pic_depth_image).astype(int)
 
 # Some Portrait photos have a completely white depth map. Let's treat those as if there was no depth map at all.
-if numpy.ptp(arr) == 0:
+if np.ptp(arr) == 0:
 		print('The selected portrait photo does not contain a depth map.')
 		quit()
 
 # This part takes the depth map and normalizes its values to the range of (0, 110). You can experiment with the value, 255 is the ceiling.
-chosen_pic_depth_image_array = (110*(arr - numpy.min(arr))/numpy.ptp(arr)).astype(int)
-chosen_pic_depth_image = Image.fromarray(numpy.uint8(chosen_pic_depth_image_array))
+chosen_pic_depth_image_array = (110*(arr - np.min(arr))/np.ptp(arr)).astype(int)
+chosen_pic_depth_image = Image.fromarray(np.uint8(chosen_pic_depth_image_array))
 
 # Making the images smaller for faster processing.
 chosen_pic_image.thumbnail((800, 800), Image.ANTIALIAS)
 chosen_pic_depth_image.thumbnail((800, 800), Image.ANTIALIAS)
 
-# Turning the images into a base64 blob that can be used in the three.js scene
+# Turning the images into base64 blobs that can be used in the three.js scene. When the colormap mode is enabled, we use the colormapped depth data as a texture.
 chosen_pic_image_buffer = io.BytesIO()
-chosen_pic_image.save(chosen_pic_image_buffer, format = 'PNG')
+if colormap == True:
+	arrx = np.array(chosen_pic_depth_image.convert('L')).astype(int)
+	pre_cmap_array = (255*(arrx - np.min(arrx))/np.ptp(arrx)).astype(int)
+	cm = cm.get_cmap('jet')
+	post_cmap_array = np.uint8(np.rint(cm(pre_cmap_array)*255))[:, :, :3]
+	cmap_img = Image.fromarray(post_cmap_array)
+	cmap_img.save(chosen_pic_image_buffer, format = 'PNG')
+else:
+	chosen_pic_image.save(chosen_pic_image_buffer, format = 'PNG')
 rgbData = 'data:image/png;base64,' + base64.b64encode(chosen_pic_image_buffer.getvalue()).decode('utf-8')
 chosen_pic_depth_image_buffer = io.BytesIO()
 chosen_pic_depth_image.save(chosen_pic_depth_image_buffer, format = 'PNG')
