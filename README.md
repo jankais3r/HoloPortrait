@@ -32,7 +32,8 @@ See it in action [here](https://twitter.com/jankais3r/status/1329924274686205952
 - The script should work on any iPhone/iPad running at least iOS 13 and Pythonista 3.3
 - Benchmarked devices:
     - iPad Air 2: 105s per hologram
-    - iPad Pro 2020: 32s per hologram
+    - iPad Pro 12.9" (2018): 31s per hologram
+    - iPad Pro 11" (2020): 32s per hologram
     - iPhone 12 Pro: 28s per hologram
 - Once the holograms are rendered and saved in the photo album, they can be instantly viewed at any time without the need to re-render them
 
