@@ -30,7 +30,7 @@ Portrait photo to Hologram all-in-one script
 See it in action [here](https://twitter.com/jankais3r/status/1347337347621400579).
 
 ## Legacy version
-This is a second generation of HoloPortrait, made possible thanks to the [driverless-HoloPlay.js](https://github.com/jankais3r/driverless-HoloPlay.js) library and [iOS-LookingGlass](https://github.com/jankais3r/iOS-LookingGlass) browser. It performs 30x faster than the first generation and it offers additional improvements like switching between Mesh and Pointcloud modes. To read more about the Legacy version of the script, see [README_legacy.md](https://github.com/jankais3r/HoloPortrait/edit/main/README_legacy.md).
+This is a second generation of HoloPortrait, made possible thanks to the [driverless-HoloPlay.js](https://github.com/jankais3r/driverless-HoloPlay.js) library and [iOS-LookingGlass](https://github.com/jankais3r/iOS-LookingGlass) browser. It performs 30x faster than the first generation and it offers additional improvements like switching between Mesh and Pointcloud modes. To read more about the Legacy version of the script, see [README_legacy.md](https://github.com/jankais3r/HoloPortrait/blob/main/README_legacy.md).
 
 ## Credits
 The Mesh code is based on a Custom Geometry example by [threejsfundamentals.org](https://threejsfundamentals.org/threejs/lessons/threejs-custom-geometry.html).
