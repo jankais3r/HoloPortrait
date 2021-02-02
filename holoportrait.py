@@ -10,6 +10,8 @@ import shutil
 import socket
 import console
 import zipfile
+import ImageOps
+import functools
 import objc_util
 import matplotlib.cm
 import urllib.request
@@ -60,9 +62,26 @@ else:
 	with open('three.min.js', 'w') as f:
 		f.write(three_js)
 
+if os.path.isfile('OrbitControls.js'):
+	with open('OrbitControls.js', 'r') as f:
+		orbitcontrols_js = f.read()
+else:
+	with urllib.request.urlopen('https://cdn.jsdelivr.net/gh/mrdoob/three.js@r105/examples/js/controls/OrbitControls.js') as f:
+		orbitcontrols_js = f.read().decode('utf-8')
+	with open('OrbitControls.js', 'w') as f:
+		f.write(orbitcontrols_js)
+
+if os.path.isfile('pydnet.mlmodel'):
+	pass
+else:
+	with urllib.request.urlopen('https://github.com/FilippoAleotti/mobilePydnet/raw/v2/iOS/AppML/Models/Pydnet.mlmodel') as f:
+		pydnet = f.read()
+	with open('pydnet.mlmodel', 'wb') as f:
+		f.write(pydnet)
+
 LG_width = 2560
 LG_height = 1600
-colormap = False
+allow_ML = True
 
 class Handler(BaseHTTPRequestHandler):
 	def do_GET(self):
@@ -72,7 +91,7 @@ class Handler(BaseHTTPRequestHandler):
 			self.end_headers()
 			self.wfile.write(rgbData)
 			return
-			
+		
 		if self.path.endswith('depth.png'):
 			self.send_response(200)
 			self.send_header('Content-type', 'image/png')
@@ -94,11 +113,25 @@ class Handler(BaseHTTPRequestHandler):
 			self.wfile.write((three_js).encode())
 			return
 		
+		if self.path.endswith('OrbitControls.js'):
+			self.send_response(200)
+			self.send_header('Content-type', 'text/javascript')
+			self.end_headers()
+			self.wfile.write((orbitcontrols_js).encode())
+			return
+		
+		if self.path.endswith('cameracontrol.html'):
+			self.send_response(200)
+			self.send_header('Content-type', 'text/html')
+			self.end_headers()
+			self.wfile.write(control.replace('xxx', control_startcamera).replace('yyy', control_sphere).encode())
+			return
+
 		if self.path == '/':
 			self.send_response(200)
 			self.send_header('Content-type', 'text/html')
 			self.end_headers()
-			self.wfile.write(html.encode())
+			self.wfile.write(mode.encode())
 			return
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
@@ -126,17 +159,87 @@ class CImage(object):
 		self.ci_img = CIImage.imageWithData_options_(chosen_pic_data, options)
 	
 	def to_png(self):
+		global depthSource
 		ctx = objc_util.ObjCClass('CIContext').context()
 		try:
 			extent = self.ci_img.extent()
 		except:
-			print('The selected portrait photo does not contain a depth map.')
-			quit()
+			if allow_ML:
+				raise('The selected portrait photo does not contain a depth map.')
+			else:
+				print('The selected portrait photo does not contain a depth map.')
+				quit()
 		m = ctx.outputImageMaximumSize()
 		cg_img = ctx.createCGImage_fromRect_(self.ci_img, extent)
 		ui_img = objc_util.UIImage.imageWithCGImage_(cg_img)
 		png_data = objc_util.uiimage_to_png(objc_util.ObjCInstance(ui_img))
+		depthSource = 'Embedded'
 		return png_data
+
+class CoreML(object):
+	def __init__(self, chosen_pic):
+		self.MLModel = objc_util.ObjCClass('MLModel')
+		self.VNCoreMLModel = objc_util.ObjCClass('VNCoreMLModel')
+		self.VNCoreMLRequest = objc_util.ObjCClass('VNCoreMLRequest')
+		self.VNImageRequestHandler = objc_util.ObjCClass('VNImageRequestHandler')
+		
+		result = self.classify_asset(chosen_pic)
+		if result:
+			resultString = str(result)
+			resultWidth = int(resultString[resultString.find('width=') + 6:resultString.find(' ', resultString.find('width=') + 6)])
+			resultHeight = int(resultString[resultString.find('height=') + 7:resultString.find(' ', resultString.find('height=') + 7)])
+			CIImage = objc_util.ObjCClass('CIImage')
+			pixelBuffer = result.pixelBuffer
+			ci_img = CIImage.imageWithCVPixelBuffer_(pixelBuffer())		
+			ctx = objc_util.ObjCClass('CIContext').context()
+			cg_img = ctx.createCGImage_fromRect_(ci_img, objc_util.CGRect(objc_util.CGPoint(0, 0), objc_util.CGSize(resultWidth, resultHeight)))
+			ui_img = objc_util.UIImage.imageWithCGImage_(cg_img)
+			self.png_data = objc_util.uiimage_to_png(objc_util.ObjCInstance(ui_img))
+			
+	def to_png(self):
+		global depthSource
+		depthSource = 'CoreML'
+		return self.png_data
+	
+	def load_model(self):
+		'''Helper method for downloading/caching the mlmodel file'''
+		ml_model_url = objc_util.nsurl('pydnet.mlmodel')
+		# Compile the model:
+		c_model_url = self.MLModel.compileModelAtURL_error_(ml_model_url, None)
+		# Load model from the compiled model file:
+		ml_model = self.MLModel.modelWithContentsOfURL_error_(c_model_url, None)
+		# Create a VNCoreMLModel from the MLModel for use with the Vision framework:
+		vn_model = self.VNCoreMLModel.modelForMLModel_error_(ml_model, None)
+		return vn_model
+	
+	def classify_asset(self, chosen_pic):
+		'''The main image classification method.'''
+		# img_data = objc_util.ns(chosen_pic.get_image_data().getvalue())
+		img_data = chosen_pic.getvalue()
+		vn_model = self.load_model()
+		# Create and perform the recognition request:
+		req = self.VNCoreMLRequest.alloc().initWithModel_(vn_model).autorelease()
+		handler = self.VNImageRequestHandler.alloc().initWithData_options_(img_data, None).autorelease()
+		success = handler.performRequests_error_([req], None)
+		if success:
+			return req.results()[0]
+		else:
+			return None
+
+class debugDelegate (object):
+	def webview_should_start_load(self, webview, url, nav_type):
+		global wk
+		val = urllib.parse.unquote(url)[5:]
+		if url.startswith('posx'):
+			wk.evaluateJavaScript_completionHandler_('camera.position.x = ' + val, None)
+			wk.evaluateJavaScript_completionHandler_('camera.lookAt(0, 0, 0)', None)
+		if url.startswith('posy'):
+			wk.evaluateJavaScript_completionHandler_('camera.position.y = ' + val, None)
+			wk.evaluateJavaScript_completionHandler_('camera.lookAt(0, 0, 0)', None)
+		if url.startswith('posz'):
+			wk.evaluateJavaScript_completionHandler_('camera.position.z = ' + val, None)
+			wk.evaluateJavaScript_completionHandler_('camera.lookAt(0, 0, 0)', None)
+		return True
 
 pointcloud = '''
 <html>
@@ -151,6 +254,7 @@ pointcloud = '''
 				display: block;
 			}
 		</style>
+		<meta charset="utf-8"/>
 		<script src="http://localhost:8080/holoplay.js"></script>
 		<script src="http://localhost:8080/three.min.js"></script>
 	</head>
@@ -158,6 +262,7 @@ pointcloud = '''
 		<canvas></canvas>
 		<script>
 			"use strict";
+			var camera;
 			function loadImage(url) {
 				return new Promise((resolve, reject) => {
 					const img = new Image();
@@ -204,7 +309,7 @@ pointcloud = '''
 				const aspect = 2;
 				const near = 1;
 				const far = 4000;
-				const camera = new THREE.PerspectiveCamera(fov, aspect, near, far);
+				camera = new THREE.PerspectiveCamera(fov, aspect, near, far);
 				camera.position.z = 450;
 
 				const scene = new THREE.Scene();
@@ -297,12 +402,14 @@ mesh = '''
 				display: block;
 			}
 		</style>
+		<meta charset="utf-8"/>
 	</head>
 	<body>
 		<canvas id="c"></canvas>
 		<script src="http://localhost:8080/holoplay.js"></script>
 		<script src="http://localhost:8080/three.min.js"></script>
 		<script>
+			var camera;
 			function main() {
 				const canvas = document.querySelector("#c");
 				const renderer = new THREE.WebGLRenderer({ canvas });
@@ -311,8 +418,8 @@ mesh = '''
 				const aspect = 2; // the canvas default
 				const near = 1;
 				const far = 5000;
-				const camera = new THREE.PerspectiveCamera(fov, aspect, near, far);
-				camera.position.set(0, 0, 280);
+				camera = new THREE.PerspectiveCamera(fov, aspect, near, far);
+				camera.position.set(0, 0, 220);
 				camera.lookAt(0, 0, 0);
 
 				const scene = new THREE.Scene();
@@ -345,10 +452,10 @@ mesh = '''
 
 							// look up the height for the for points
 							// around this cell
-							const h00 = width * 0.1 + data[base0] * -1.5;
-							const h01 = width * 0.1 + data[base0 + 4] * -1.5;
-							const h10 = width * 0.1 + data[base1] * -1.5;
-							const h11 = width * 0.1 + data[base1 + 4] * -1.5;
+							const h00 = width * 0.14 + data[base0] * -1.4;
+							const h01 = width * 0.14 + data[base0 + 4] * -1.4;
+							const h10 = width * 0.14 + data[base1] * -1.4;
+							const h11 = width * 0.14 + data[base1 + 4] * -1.4;
 
 							// compute the average height
 							const hm = (h00 + h01 + h10 + h11) / 4;
@@ -400,10 +507,11 @@ mesh = '''
 					const texture = loader.load("http://localhost:8080/rgb.png");
 					texture.flipY = false;
 					texture.minFilter = THREE.LinearFilter;
-
-					var material = new THREE.MeshBasicMaterial({ map: texture });
-
+					
+					var material = new THREE.MeshBasicMaterial({ map: texture});
+					
 					var portrait = new THREE.Mesh(geometry, material);
+					
 					portrait.rotation.x = 90 * THREE.Math.DEG2RAD;
 					scene.add(portrait);
 				}
@@ -457,8 +565,274 @@ mesh = '''
 </html>
 '''
 
-html = mesh
+wireframe = '''
+<html>
+	<head>
+		<style>
+			html,
+			body {
+				margin: 0;
+			}
+			#c {
+				width: 100vw;
+				height: 100vh;
+				display: block;
+			}
+		</style>
+		<meta charset="utf-8"/>
+	</head>
+	<body>
+		<canvas id="c"></canvas>
+		<script src="http://localhost:8080/holoplay.js"></script>
+		<script src="http://localhost:8080/three.min.js"></script>
+		<script>
+			var camera;
+			function main() {
+				const canvas = document.querySelector("#c");
+				const renderer = new THREE.WebGLRenderer({ canvas });
+
+				const fov = 70;
+				const aspect = 2; // the canvas default
+				const near = 1;
+				const far = 5000;
+				camera = new THREE.PerspectiveCamera(fov, aspect, near, far);
+				camera.position.set(0, 0, 15);
+				camera.lookAt(0, 0, 0);
+
+				const scene = new THREE.Scene();
+				var holoplay = new HoloPlay(scene, camera, renderer);
+
+				const imgLoader = new THREE.ImageLoader();
+				imgLoader.load("http://localhost:8080/depth.png", createHeightmap);
+
+				function createHeightmap(image) {
+					// extract the data from the image by drawing it to a canvas
+					// and calling getImageData
+					
+					const ctx = document.createElement("canvas").getContext("2d");
+					var { width, height } = image;
+					width = Math.floor(width / 15);
+					height = Math.floor(height / 15);
+					ctx.imageSmoothingQuality = "high";
+					ctx.imageSmoothingEnabled = true;
+					ctx.canvas.width = width;
+					ctx.canvas.height = height;
+					ctx.drawImage(image, 0, 0, width, height);
+					
+					const { data } = ctx.getImageData(0, 0, width, height);
+
+					const geometry = new THREE.Geometry();
+
+					const cellsAcross = width - 1;
+					const cellsDeep = height - 1;
+					for (let z = 0; z < cellsDeep; ++z) {
+						for (let x = 0; x < cellsAcross; ++x) {
+							// compute row offsets into the height data
+							// we multiply by 4 because the data is R,G,B,A but we
+							// only care about R
+							const base0 = (z * width + x) * 4;
+							const base1 = base0 + width * 4;
+
+							// look up the height for the for points
+							// around this cell
+							const h00 = width * 0.2 + data[base0] * -0.1;
+							const h01 = width * 0.2 + data[base0 + 4] * -0.1;
+							const h10 = width * 0.2 + data[base1] * -0.1;
+							const h11 = width * 0.2 + data[base1 + 4] * -0.1;
+
+							// compute the average height
+							const hm = (h00 + h01 + h10 + h11) / 4;
+
+							// the corner positions
+							const x0 = x;
+							const x1 = x + 1;
+							const z0 = z;
+							const z1 = z + 1;
+
+							// remember the first index of these 5 vertices
+							const ndx = geometry.vertices.length;
+
+							// add the 4 corners for this cell and the midpoint
+							geometry.vertices.push(new THREE.Vector3(x0, h00, z0), new THREE.Vector3(x1, h01, z0), new THREE.Vector3(x0, h10, z1), new THREE.Vector3(x1, h11, z1), new THREE.Vector3((x0 + x1) / 2, hm, (z0 + z1) / 2));
+
+							//      2----3
+							//      |\  /|
+							//      | \/4|
+							//      | /\ |
+							//      |/  \|
+							//      0----1
+
+							// create 4 triangles
+							geometry.faces.push(new THREE.Face3(ndx, ndx + 4, ndx + 1), new THREE.Face3(ndx + 1, ndx + 4, ndx + 3), new THREE.Face3(ndx + 3, ndx + 4, ndx + 2), new THREE.Face3(ndx + 2, ndx + 4, ndx + 0));
+
+							// add the texture coordinates for each vertex of each face.
+							const u0 = x / cellsAcross;
+							const v0 = z / cellsDeep;
+							const u1 = (x + 1) / cellsAcross;
+							const v1 = (z + 1) / cellsDeep;
+							const um = (u0 + u1) / 2;
+							const vm = (v0 + v1) / 2;
+							geometry.faceVertexUvs[0].push(
+								[new THREE.Vector2(u0, v0), new THREE.Vector2(um, vm), new THREE.Vector2(u1, v0)],
+								[new THREE.Vector2(u1, v0), new THREE.Vector2(um, vm), new THREE.Vector2(u1, v1)],
+								[new THREE.Vector2(u1, v1), new THREE.Vector2(um, vm), new THREE.Vector2(u0, v1)],
+								[new THREE.Vector2(u0, v1), new THREE.Vector2(um, vm), new THREE.Vector2(u0, v0)]
+							);
+						}
+					}
+
+					geometry.computeFaceNormals();
+
+					// center the geometry
+					geometry.translate(width / -2, 0, height / -2);
+
+					const loader = new THREE.TextureLoader();
+					const texture = loader.load("http://localhost:8080/rgb.png");
+					texture.flipY = false;
+					texture.minFilter = THREE.LinearFilter;
+					
+					var material = new THREE.MeshBasicMaterial({ map: texture, wireframe: true, wireframeLinewidth: 1.5});
+					var portrait = new THREE.Mesh(geometry, material);
+					
+					portrait.rotation.x = 90 * THREE.Math.DEG2RAD;
+					scene.add(portrait);
+				}
+
+				function resizeRendererToDisplaySize(renderer) {
+					const canvas = renderer.domElement;
+					const width = canvas.clientWidth;
+					const height = canvas.clientHeight;
+					const needResize = canvas.width !== width || canvas.height !== height;
+					if (needResize) {
+						renderer.setSize(width, height, false);
+					}
+					return needResize;
+				}
+
+				function render() {
+					var timer = setInterval(function () {
+						if (resizeRendererToDisplaySize(renderer)) {
+							const canvas = renderer.domElement;
+							camera.aspect = canvas.clientWidth / canvas.clientHeight;
+							camera.updateProjectionMatrix();
+						}
+						holoplay.render();
+						var ctxx = renderer.domElement.getContext("webgl");
+						var pixels = new Uint8Array(ctxx.drawingBufferWidth * ctxx.drawingBufferHeight * 4);
+						ctxx.readPixels(0, 0, ctxx.drawingBufferWidth, ctxx.drawingBufferHeight, ctxx.R, ctxx.UNSIGNED_BYTE, pixels);
+						var pixelSum = pixels.reduce(function (a, b) {
+							return a + b;
+						}, 0);
+						if (pixelSum != 0) {
+							scene.remove(portrait);
+							portrait.dispose();
+							portrait = undefined;
+							material.dispose();
+							material = undefined;
+							geometry.dispose();
+							geometry = undefined;
+							scene.dispose();
+							scene = undefined;
+							clearInterval(timer);
+						}
+					}, 10);
+				}
+				render();
+			}
+
+			main();
+		</script>
+	</body>
+</html>
+'''
+
+control = '''
+<!DOCTYPE html>
+<html>
+<head>
+	<style>
+		html,
+		body {
+			margin: 0;
+		}
+	</style>
+	<meta charset="utf-8" />
+</head>
+<body>
+	<script src="http://localhost:8080/three.min.js"></script>
+	<script src="http://localhost:8080/OrbitControls.js"></script>
+	<script>
+		report = new Object();
+		report.posx = function(log) {
+			var iframe = document.createElement("IFRAME");
+			iframe.setAttribute("src", "posx:" + log);
+			document.documentElement.appendChild(iframe);
+			iframe.parentNode.removeChild(iframe);
+			iframe = null;
+		};
+		report.posy = function(log) {
+			var iframe = document.createElement("IFRAME");
+			iframe.setAttribute("src", "posy:" + log);
+			document.documentElement.appendChild(iframe);
+			iframe.parentNode.removeChild(iframe);
+			iframe = null;
+		};
+		report.posz = function(log) {
+			var iframe = document.createElement("IFRAME");
+			iframe.setAttribute("src", "posz:" + log);
+			document.documentElement.appendChild(iframe);
+			iframe.parentNode.removeChild(iframe);
+			iframe = null;
+		};
+		var camera, scene, renderer;
+
+		function init() {
+			scene = new THREE.Scene();
+			camera = new THREE.PerspectiveCamera(12.5, window.innerWidth / window.innerHeight, 0.1, 1000);
+			camera.position.set(xxx);
+			renderer = new THREE.WebGLRenderer();
+			renderer.setSize(window.innerWidth, window.innerHeight);
+			document.body.appendChild(renderer.domElement);
+			const controls = new THREE.OrbitControls(camera, renderer.domElement);
+			controls.addEventListener("change", report_camera);
+			mesh = new THREE.Mesh(new THREE.SphereGeometry(yyy), new THREE.MeshBasicMaterial({
+				color: 0xffffff,
+				wireframe: true
+			}));
+			scene.add(mesh);
+		}
+
+		window.addEventListener("resize", function() {
+			var width = window.innerWidth;
+			var height = window.innerHeight;
+			renderer.setSize(width, height);
+			camera.aspect = width / height;
+			camera.updateProjectionMatrix();
+		});
+
+		function render() {
+			requestAnimationFrame(render);
+			renderer.render(scene, camera);
+		}
+
+		function report_camera() {
+			report.posx(camera.position.x);
+			report.posy(camera.position.y);
+			report.posz(camera.position.z);
+		}
+
+		init();
+		render();
+	</script>
+</body>
+</html>
+'''
+
 wk = None
+mode = mesh
+depthSource = None
+control_sphere = '14.667, 8, 8'
+control_startcamera = '0, 0, 220'
 
 @objc_util.on_main_thread
 def main():
@@ -488,14 +862,34 @@ def main():
 		s.stop_server()
 		quit()
 
-def switch_button(sender):
-	global wk, html, switchButton
-	if switchButton.title == 'Switch to Mesh':
-		html = mesh
-		switchButton.title = 'Switch to Pointcloud'
-	else:
-		html = pointcloud
-		switchButton.title = 'Switch to Mesh'
+def modeSelect(sender):
+	global wk, mode, control_startcamera, control_sphere, cameracontrol
+	if modeSelector.selected_index == 0:
+		mode = mesh
+		control_startcamera = '0, 0, 220'
+		control_sphere = '14.667, 8, 8'
+	elif modeSelector.selected_index == 1:
+		mode = wireframe
+		control_startcamera = '0, 0, 15'
+		control_sphere = '1, 8, 8'
+	elif modeSelector.selected_index == 2:
+		mode = pointcloud
+		control_startcamera = '0, 0, 450'
+		control_sphere = '30, 8, 8'
+	
+	request = objc_util.ObjCClass('NSURLRequest').alloc().init()
+	nsurl = objc_util.nsurl('http://localhost:8080')
+	x = request.initWithURL_(nsurl)
+	wk.loadRequest_(x)
+	cameracontrol.load_url('http://localhost:8080/cameracontrol.html')
+
+def textureSelect(sender):
+	global wk, rgbData
+	if textureSelector.selected_index == 0:
+		rgbData = chosen_pic_photo_image_buffer.getvalue()
+	elif textureSelector.selected_index == 1:
+		rgbData = chosen_pic_colormap_image_buffer.getvalue()
+	
 	request = objc_util.ObjCClass('NSURLRequest').alloc().init()
 	nsurl = objc_util.nsurl('http://localhost:8080')
 	x = request.initWithURL_(nsurl)
@@ -504,7 +898,8 @@ def switch_button(sender):
 def close_button(sender):
 	global v, wk, s
 	wk.loadHTMLString_baseURL_('', None)
-	# del wk
+	wk = None
+	del wk
 	v.close()
 	s.stop_server()
 	console.clear()
@@ -519,47 +914,75 @@ for album in photos.get_smart_albums():
 
 # Again using iOS API to get the photo's proper filename
 try:
-	chosen_pic = photos.pick_asset(assets = my_album.assets, title = 'Select a portrait photo')
+	if allow_ML:
+		chosen_pic = photos.pick_asset(assets = photos.get_assets(), title = 'Select a photo')
+		# chosen_pic = photos.pick_image(show_albums=True, include_metadata=False, original=True, raw_data=False, multi=False)
+	else:
+		chosen_pic = photos.pick_asset(assets = my_album.assets, title = 'Select a portrait photo')
 	filename, file_extension = os.path.splitext(str(objc_util.ObjCInstance(chosen_pic).originalFilename()))
 	assert filename != 'None'
 	output_filename = 'Holo_' + filename + '.png'
 except:
 	quit()
 
-chosen_pic_image = chosen_pic.get_image(original = True)
-chosen_pic_data = chosen_pic.get_image_data(original = True).getvalue()
+try:
+	chosen_pic_image = chosen_pic.get_image(original = False)
+except:
+	print('Image format (' + file_extension[1:] + ') not supported.')
+	quit()
+chosen_pic_data = chosen_pic.get_image_data(original = False).getvalue()
 
-chosen_pic_depth = CImage(objc_util.ns(chosen_pic_data)).to_png()
-chosen_pic_depth_stream = io.BytesIO(chosen_pic_depth)
-chosen_pic_depth_image = Image.open(chosen_pic_depth_stream)
+# Extract a depth map
+try:
+	chosen_pic_depth = CImage(objc_util.ns(chosen_pic_data)).to_png()
+	chosen_pic_depth_stream = io.BytesIO(chosen_pic_depth)
+	chosen_pic_depth_image = Image.open(chosen_pic_depth_stream)
+	
+	# Some Portrait photos have a completely white depth map. Let's treat those as if there was no depth map at all.
+	arr = numpy.array(chosen_pic_depth_image).astype(int)
+	if numpy.ptp(arr) == 0:
+		if allow_ML:
+			raise('The selected portrait photo does not contain a depth map.')
+		else:
+			print('The selected portrait photo does not contain a depth map.')
+			quit()
+# If the selected photo does not contain a depth map, let's infer it using coreML
+except Exception as e:
+	# Hardcoded resolution for the Pydnet model
+	chosen_pic_resized = chosen_pic.get_image(original = False).resize((640, 384))
+	with io.BytesIO() as bts:
+		chosen_pic_resized.save(bts, format = 'PNG')
+		chosen_pic_depth = CoreML(bts).to_png()
+	chosen_pic_depth_stream = io.BytesIO(chosen_pic_depth)
+	chosen_pic_depth_image = Image.open(chosen_pic_depth_stream)
+	chosen_pic_depth_image = chosen_pic_depth_image.resize((int(chosen_pic.get_ui_image().size[0]), int(chosen_pic.get_ui_image().size[1])), Image.BICUBIC)
+	chosen_pic_depth_image = ImageOps.invert(chosen_pic_depth_image)
+	# chosen_pic_depth_image.show()
+	arr = numpy.array(chosen_pic_depth_image).astype(int)
 
-arr = numpy.array(chosen_pic_depth_image).astype(int)
-
-# Some Portrait photos have a completely white depth map. Let's treat those as if there was no depth map at all.
-if numpy.ptp(arr) == 0:
-		print('The selected portrait photo does not contain a depth map.')
-		quit()
-
-# This part takes the depth map and normalizes its values to the range of (0, 110). You can experiment with the value, 255 is the ceiling.
-chosen_pic_depth_image_array = (110*(arr - numpy.min(arr))/numpy.ptp(arr)).astype(int)
+# This part takes the depth map and normalizes its values to the range of (0, 180). You can experiment with the value, 255 is the ceiling.
+chosen_pic_depth_image_array = (120*(arr - numpy.min(arr))/numpy.ptp(arr)).astype(int)
 chosen_pic_depth_image = Image.fromarray(numpy.uint8(chosen_pic_depth_image_array))
+# chosen_pic_depth_image = chosen_pic_depth_image.convert('P', palette = Image.ADAPTIVE, colors = 2)
+# chosen_pic_depth_image.show()
 
 # Making the images smaller for faster processing.
 chosen_pic_image.thumbnail((350, 350), Image.ANTIALIAS)
 chosen_pic_depth_image.thumbnail((350, 350), Image.ANTIALIAS)
 
 # When the colormap mode is enabled, we use the colormapped depth data as a texture.
-chosen_pic_image_buffer = io.BytesIO()
-if colormap == True:
-	arrx = numpy.array(chosen_pic_depth_image.convert('L')).astype(int)
-	pre_cmap_array = (255*(arrx - numpy.min(arrx))/numpy.ptp(arrx)).astype(int)
-	cm = matplotlib.cm.get_cmap('jet')
-	post_cmap_array = numpy.uint8(numpy.rint(cm(pre_cmap_array)*255))[:, :, :3]
-	cmap_img = Image.fromarray(post_cmap_array)
-	cmap_img.save(chosen_pic_image_buffer, format = 'PNG')
-else:
-	chosen_pic_image.save(chosen_pic_image_buffer, format = 'PNG')
-rgbData = chosen_pic_image_buffer.getvalue()
+chosen_pic_photo_image_buffer = io.BytesIO()
+chosen_pic_colormap_image_buffer = io.BytesIO()
+
+arrx = numpy.array(chosen_pic_depth_image.convert('L')).astype(int)
+pre_cmap_array = (255*(arrx - numpy.min(arrx))/numpy.ptp(arrx)).astype(int)
+cm = matplotlib.cm.get_cmap('jet')
+post_cmap_array = numpy.uint8(numpy.rint(cm(pre_cmap_array)*255))[:, :, :3]
+cmap_img = Image.fromarray(post_cmap_array)
+cmap_img.save(chosen_pic_colormap_image_buffer, format = 'PNG')
+
+chosen_pic_image.save(chosen_pic_photo_image_buffer, format = 'PNG')
+rgbData = chosen_pic_photo_image_buffer.getvalue()
 chosen_pic_depth_image_buffer = io.BytesIO()
 chosen_pic_depth_image.save(chosen_pic_depth_image_buffer, format = 'PNG')
 depthData = chosen_pic_depth_image_buffer.getvalue()
@@ -567,22 +990,41 @@ depthData = chosen_pic_depth_image_buffer.getvalue()
 s = Server()
 s.start_server()
 
-switchButton = ui.Button(title = 'Switch to', background_color = 'white', tint_color = 'white', corner_radius = 5)
-switchButton.action = switch_button
-if html == mesh:
-	switchButton.title = 'Switch to Pointcloud'
-else:
-	switchButton.title = 'Switch to Mesh'
-closeButton = ui.Button(title = 'Close', background_color = 'white', tint_color = 'white', corner_radius = 5)
+modeSelector = ui.SegmentedControl(alpha = 0, corner_radius = 5)
+modeSelector.segments = ('Mesh' , 'Wireframe', 'Point Cloud')
+modeSelector.selected_index = 0
+modeSelector.action = modeSelect
+
+textureSelector = ui.SegmentedControl(alpha = 0, corner_radius = 5)
+textureSelector.segments = ('Photo' , 'Colormap')
+textureSelector.selected_index = 0
+textureSelector.action = textureSelect
+
+closeButton = ui.Button(title = 'Close', alpha = 0, background_color = 'black', tint_color = 'white', corner_radius = 5)
 closeButton.action = close_button
+depthSourceLabel = ui.Label(text = 'Depth Source: ' + depthSource, font = ('<system>', 14), alignment = ui.ALIGN_CENTER, alpha = 0, text_color = 'black')
+
+cameracontrol = ui.WebView(apha = 0, corner_radius = 15)
+cameracontrol.delegate = debugDelegate()
+
 v = ui.View()
-v.add_subview(closeButton)
-v.add_subview(switchButton)
 v.present(style = 'fullscreen', hide_title_bar = True)
-switchButton.frame = (v.width / 2 - 90, v.height / 2 - 40, 180, 32)
-switchButton.background_color = 'black'
-closeButton.frame = (v.width / 2 - 40, v.height / 2 + 8, 80, 32)
-closeButton.background_color = 'black'
+v.add_subview(textureSelector)
+v.add_subview(modeSelector)
+v.add_subview(closeButton)
+v.add_subview(depthSourceLabel)
+v.add_subview(cameracontrol)
+textureSelector.frame = (v.width / 2 - 75, v.height / 2 - 288, 150, 32)
+textureSelector.alpha = 1
+modeSelector.frame = (v.width / 2 - 125, v.height / 2 - 240, 250, 32)
+modeSelector.alpha = 1
+closeButton.frame = (v.width / 2 - 40, v.height / 2 - 192, 80, 32)
+closeButton.alpha = 1
+depthSourceLabel.frame = (v.width / 2 - 90, v.height / 2 - 150, 180, 32)
+depthSourceLabel.alpha = 1
+cameracontrol.frame = (v.width / 2 - 150, v.height / 2 - 100, 300, 300)
+cameracontrol.alpha = 1
+cameracontrol.load_url('http://localhost:8080/cameracontrol.html')
 
 main()
 try:
