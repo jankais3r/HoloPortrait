@@ -11,7 +11,6 @@ import socket
 import console
 import zipfile
 import ImageOps
-import functools
 import objc_util
 import matplotlib.cm
 import urllib.request
@@ -57,7 +56,7 @@ if os.path.isfile('three.min.js'):
 	with open('three.min.js', 'r') as f:
 		three_js = f.read()
 else:
-	with urllib.request.urlopen('https://cdn.jsdelivr.net/gh/mrdoob/three.js@r105/build/three.min.js') as f:
+	with urllib.request.urlopen('https://cdn.jsdelivr.net/gh/mrdoob/three.js@r124/build/three.min.js') as f:
 		three_js = f.read().decode('utf-8')
 	with open('three.min.js', 'w') as f:
 		f.write(three_js)
@@ -66,7 +65,7 @@ if os.path.isfile('OrbitControls.js'):
 	with open('OrbitControls.js', 'r') as f:
 		orbitcontrols_js = f.read()
 else:
-	with urllib.request.urlopen('https://cdn.jsdelivr.net/gh/mrdoob/three.js@r105/examples/js/controls/OrbitControls.js') as f:
+	with urllib.request.urlopen('https://cdn.jsdelivr.net/gh/mrdoob/three.js@r124/examples/js/controls/OrbitControls.js') as f:
 		orbitcontrols_js = f.read().decode('utf-8')
 	with open('OrbitControls.js', 'w') as f:
 		f.write(orbitcontrols_js)
@@ -79,8 +78,6 @@ else:
 	with open('pydnet.mlmodel', 'wb') as f:
 		f.write(pydnet)
 
-LG_width = 2560
-LG_height = 1600
 allow_ML = True
 
 class Handler(BaseHTTPRequestHandler):
@@ -849,7 +846,7 @@ def main():
 		second_window.setScreen(second_screen)
 		second_window.makeKeyAndVisible()
 		
-		wk = objc_util.ObjCClass('WKWebView').alloc().initWithFrame_(objc_util.CGRect((0, 0), (LG_width, LG_height - 1))).autorelease()
+		wk = objc_util.ObjCClass('WKWebView').alloc().initWithFrame_(objc_util.CGRect((0, 0), (second_screen.bounds().size.width, second_screen.bounds().size.height - 1))).autorelease()
 		second_window.addSubview(wk)
 		
 		request = objc_util.ObjCClass('NSURLRequest').alloc().init()
@@ -1031,7 +1028,6 @@ try:
 	# If you are rendering a complex Three.js scene and the hologram doesn't look right, try increasing the sleep timer.
 	# This is a hack around a webkit bug. The window needs to be resized once the rendering completes in order to use correct shader values.
 	time.sleep(3)
-	wk.setFrame_(objc_util.CGRect((0, 0), (LG_width, LG_height)))
+	wk.setFrame_(CGRect((0, 0), (second_screen.bounds().size.width, second_screen.bounds().size.height)))
 except:
 	pass
-	
